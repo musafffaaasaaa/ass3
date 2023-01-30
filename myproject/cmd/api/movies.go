@@ -6,8 +6,32 @@ import (
 	"musa.net/internal/data"
 	"musa.net/internal/validator"
 	"net/http"
-	"strconv"
 )
+
+func (app *application) showMovieHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := app.readIDParam(r)
+	if err != nil {
+		app.notFoundResponse(w, r)
+		return
+	}
+	// Call the Get() method to fetch the data for a specific movie. We also need to
+	// use the errors.Is() function to check if it returns a data.ErrRecordNotFound
+	// error, in which case we send a 404 Not Found response to the client.
+	movie, err := app.models.Movies.Get(id, r)
+	if err != nil {
+		switch {
+		case errors.Is(err, data.ErrRecordNotFound):
+			app.notFoundResponse(w, r)
+		default:
+			app.serverErrorResponse(w, r, err)
+		}
+		return
+	}
+	err = app.writeJSON(w, http.StatusOK, envelope{"movie": movie}, nil)
+	if err != nil {
+		app.serverErrorResponse(w, r, err)
+	}
+}
 
 func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
@@ -36,7 +60,7 @@ func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Reques
 	// Call the Insert() method on our movies model, passing in a pointer to the
 	// validated movie struct. This will create a record in the database and update the
 	// movie struct with the system-generated information.
-	err = app.models.Movies.Insert(movie)
+	err = app.models.Movies.Insert(movie, r)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 		return
@@ -54,38 +78,14 @@ func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Reques
 		app.serverErrorResponse(w, r, err)
 	}
 }
-func (app *application) showMovieHandler(w http.ResponseWriter, r *http.Request) {
-	id, err := app.readIDParam(r)
-	if err != nil {
-		app.notFoundResponse(w, r)
-		return
-	}
-	// Call the Get() method to fetch the data for a specific movie. We also need to
-	// use the errors.Is() function to check if it returns a data.ErrRecordNotFound
-	// error, in which case we send a 404 Not Found response to the client.
-	movie, err := app.models.Movies.Get(id)
-	if err != nil {
-		switch {
-		case errors.Is(err, data.ErrRecordNotFound):
-			app.notFoundResponse(w, r)
-		default:
-			app.serverErrorResponse(w, r, err)
-		}
-		return
-	}
-	err = app.writeJSON(w, http.StatusOK, envelope{"movie": movie}, nil)
-	if err != nil {
-		app.serverErrorResponse(w, r, err)
-	}
-}
-
 func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := app.readIDParam(r)
 	if err != nil {
 		app.notFoundResponse(w, r)
 		return
 	}
-	movie, err := app.models.Movies.Get(id)
+	// Retrieve the movie record as normal.
+	movie, err := app.models.Movies.Get(id, r)
 	if err != nil {
 		switch {
 		case errors.Is(err, data.ErrRecordNotFound):
@@ -95,14 +95,6 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-
-	if r.Header.Get("X-Expected-Version") != "" {
-		if strconv.FormatInt(int64(movie.Version), 32) != r.Header.Get("X-Expected-Version") {
-			app.editConflictResponse(w, r)
-			return
-		}
-	}
-
 	// Use pointers for the Title, Year and Runtime fields.
 	var input struct {
 		Title   *string       `json:"title"`
@@ -140,7 +132,7 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
-	err = app.models.Movies.Update(movie)
+	err = app.models.Movies.Update(movie, r)
 	if err != nil {
 		switch {
 		case errors.Is(err, data.ErrEditConflict):
@@ -150,6 +142,7 @@ func (app *application) updateMovieHandler(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
+
 	err = app.writeJSON(w, http.StatusOK, envelope{"movie": movie}, nil)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
@@ -165,7 +158,7 @@ func (app *application) deleteMovieHandler(w http.ResponseWriter, r *http.Reques
 	}
 	// Delete the movie from the database, sending a 404 Not Found response to the
 	// client if there isn't a matching record.
-	err = app.models.Movies.Delete(id)
+	err = app.models.Movies.Delete(id, r)
 	if err != nil {
 		switch {
 		case errors.Is(err, data.ErrRecordNotFound):
@@ -181,7 +174,6 @@ func (app *application) deleteMovieHandler(w http.ResponseWriter, r *http.Reques
 		app.serverErrorResponse(w, r, err)
 	}
 }
-
 func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Title  string
@@ -200,14 +192,14 @@ func (app *application) listMoviesHandler(w http.ResponseWriter, r *http.Request
 		app.failedValidationResponse(w, r, v.Errors)
 		return
 	}
-
-	var movies, err = app.models.Movies.GetAll(input.Title, input.Genres, input.Filters)
+	// Accept the metadata struct as a return value.
+	movies, metadata, err := app.models.Movies.GetAll(input.Title, input.Genres, input.Filters, r)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 		return
 	}
-	// Send a JSON response containing the movie data.
-	err = app.writeJSON(w, http.StatusOK, envelope{"movies": movies}, nil)
+	// Include the metadata in the response envelope.
+	err = app.writeJSON(w, http.StatusOK, envelope{"movies": movies, "metadata": metadata}, nil)
 	if err != nil {
 		app.serverErrorResponse(w, r, err)
 	}
